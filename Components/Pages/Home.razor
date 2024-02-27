@@ -1,0 +1,188 @@
+﻿@page "/"
+@using Microsoft.AspNetCore.Authorization
+@using Serverside.Codes
+@using Serverside.Data
+@using Serverside.Models
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject TodoDbContext todoContext
+
+@attribute [Authorize(Policy = "AuthenticatedUser")]
+
+<PageTitle>Home</PageTitle>
+
+<div class="container mt-3">
+    @if (!string.IsNullOrWhiteSpace(error))
+    {
+        <div class="alert alert-danger">@error</div>
+    }
+
+    <h1 class="mb-3">User: @username</h1>
+
+    @if (!isCPRVerified)
+    {
+        <div class="form-group">
+            <label for="_cprInput">Indtast CPR Nummer:</label>
+            <input type="text" id="_cprInput" class="form-control" @bind="CprInput" />
+            <button class="btn btn-primary mt-2" @onclick="SubmitCPR">Search</button>
+        </div>
+    }
+    else
+    {
+        <p>Dit cpr-nr: @_cprInput</p>
+
+        <div class="form-group">
+            <label for="itemInput">Indtast ToDo:</label>
+            <input type="text" id="itemInput" class="form-control" @bind="itemInput" />
+            <button class="btn btn-success mt-2" @onclick="SubmitItem">Submit</button>
+        </div>
+
+        <table class="table mt-3">
+            <thead>
+                <tr>
+                    <th>User</th>
+                    <th>Item</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (todoList != null)
+                {
+                    @foreach (var todo in todoList)
+                    {
+                        <tr>
+                            <td>@todo.User</td>
+                            <td>@todo.Item</td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private bool isCPRVerified = false; // has the user submitted a valid cpr
+
+    private string username; // logged in user
+
+    private string _cprInput;
+    public string CprInput
+    {
+        get => _cprInput;
+        set
+        {
+            _cprInput = InsertDash(value);
+        }
+    }
+
+
+    private string itemInput; // input from user
+
+    private string error = string.Empty; // error message
+
+    private List<TodoList> todoList { get; set;} = new List<TodoList>(); // list of todo items
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        var user = authenticationState.User;
+
+        if (user.Identity.IsAuthenticated)
+        {
+            username = user.Identity.Name; 
+        }
+    }
+
+    // Verify if the user has already submitted a cpr
+    private bool VerifyCPR()
+    {
+        // Attempt to find an existing CPR entry for the user
+        Cpr userCpr = todoContext.Cprs.FirstOrDefault(cpr => cpr.User == username);
+
+        // If no entry is found, create a new one
+        if (userCpr == null)
+        {
+            // Hash the input CPR number
+            var hashedCpr = HashingHandler.BCryptHashing(_cprInput);
+
+            // Create and add the new CPR entry
+            var newUserCpr = new Cpr { CprNr = hashedCpr, User = username };
+            todoContext.Cprs.Add(newUserCpr);
+            todoContext.SaveChanges();
+
+            // Since we just hashed and saved the input, it is verified by definition
+            return true;
+        }
+        else
+        {
+            // If an entry exists, verify the input CPR number against the stored, hashed CPR number
+            return HashingHandler.BCryptVerify(_cprInput, userCpr.CprNr);
+        }
+    }
+
+
+    private void SubmitCPR()
+    {
+
+        var numericCpr = _cprInput.Replace("-", "");
+        if (numericCpr.Length != 10)
+        {
+            error = "CPR number must be exactly 10 digits long.";
+            return;
+        }
+
+        if(!VerifyCPR())
+        {
+            error = "CPR does not exist";
+            return;
+        }
+
+        isCPRVerified = true;
+        FetchTodo();
+    }
+
+    private void SubmitItem()
+    {
+        if(itemInput == null)
+        {
+            error = "Item cannot be empty";
+            return;
+        } 
+        else
+        {
+            var newItem = new TodoList
+                {
+                    Item = itemInput,
+                    User = username
+                };
+            todoContext.Add(newItem);
+            todoContext.SaveChanges();
+
+            itemInput = string.Empty;
+
+            FetchTodo();
+        }
+    }
+
+    private void FetchTodo()
+    {
+        todoList = todoContext.TodoLists
+                    .Where(todo => todo.User == username)
+                    .ToList();
+    }
+
+    private string InsertDash(string value)
+    {
+        if (value == null) return null;
+
+        // Remove any existing dashes to avoid duplication
+        var numericValue = value.Replace("-", "");
+
+        // Ensure we don't exceed the max length without the dash
+        if (numericValue.Length > 10) numericValue = numericValue.Substring(0, 10);
+
+        // Insert dash after the 6th character if length is sufficient
+        if (numericValue.Length > 6) return numericValue.Insert(6, "-");
+
+        return numericValue;
+    }
+}
