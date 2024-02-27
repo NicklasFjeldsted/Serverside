@@ -22,7 +22,7 @@
     {
         <div class="form-group">
             <label for="_cprInput">Indtast CPR Nummer:</label>
-            <input type="text" id="_cprInput" class="form-control" @bind="CprInput" />
+            <input type="text" id="_cprInput" class="form-control" value="@CprInput" @oninput="HandleInput" maxlength="11" />
             <button class="btn btn-primary mt-2" @onclick="SubmitCPR">Search</button>
         </div>
     }
@@ -159,7 +159,7 @@
 
             itemInput = string.Empty;
 
-            FetchTodo();
+            todoList.Add(newItem);
         }
     }
 
@@ -170,6 +170,13 @@
                     .ToList();
     }
 
+    private void HandleInput(ChangeEventArgs e)
+    {
+        var inputValue = e.Value.ToString();
+        CprInput = InsertDash(inputValue);
+    }
+
+    // Update InsertDash method if necessary to handle the logic correctly
     private string InsertDash(string value)
     {
         if (value == null) return null;
