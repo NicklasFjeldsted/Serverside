@@ -1,10 +1,15 @@
 ﻿@page "/"
 @using Microsoft.AspNetCore.Authorization
 @using Serverside.Codes
+@using Serverside.DTO
 @using Serverside.Data
 @using Serverside.Models
+@using Microsoft.EntityFrameworkCore
+
 @inject AuthenticationStateProvider AuthenticationStateProvider
-@inject TodoDbContext todoContext
+@inject TodoDbContext _todoContext
+@inject EncryptionHandler _encryptionHandler
+@inject AsyncEncryptionHandler _asyncEncryptionHandler
 
 @attribute [Authorize(Policy = "AuthenticatedUser")]
 
@@ -23,16 +28,16 @@
         <div class="form-group">
             <label for="_cprInput">Indtast CPR Nummer:</label>
             <input type="text" id="_cprInput" class="form-control" value="@CprInput" @oninput="HandleInput" maxlength="11" />
-            <button class="btn btn-primary mt-2" @onclick="SubmitCPR">Search</button>
+            <button class="btn btn-primary mt-2" @onclick="SubmitCpr">Submit</button>
         </div>
     }
     else
     {
-        <p>Dit cpr-nr: @_cprInput</p>
+        <p>Dit cpr-nr: @_hashedCpr</p>
 
         <div class="form-group">
-            <label for="itemInput">Indtast ToDo:</label>
-            <input type="text" id="itemInput" class="form-control" @bind="itemInput" />
+            <label for="_itemInput">Indtast ToDo:</label>
+            <input type="text" id="_itemInput" class="form-control" @bind="_itemInput" />
             <button class="btn btn-success mt-2" @onclick="SubmitItem">Submit</button>
         </div>
 
@@ -62,112 +67,125 @@
 @code {
     private bool isCPRVerified = false; // has the user submitted a valid cpr
 
-    private string username; // logged in user
-
-    private string _cprInput;
     public string CprInput
     {
-        get => _cprInput;
+        get => _cprInput!;
         set
         {
             _cprInput = InsertDash(value);
         }
-    }
+    } 
 
+    private string? username; // username of the authenticated user
+    private string? _cprInput; // input field for cpr
+    private string? _itemInput; // input field for todo item
+    private string? _hashedCpr; // hashed cpr number
+    private string? error; // error message
 
-    private string itemInput; // input from user
+    private List<TodoListDTO> todoList { get; set; } = new List<TodoListDTO>(); // list of todo items
 
-    private string error = string.Empty; // error message
+    private string? hashTest1;
+    private string? hashTest2;
 
-    private List<TodoList> todoList { get; set;} = new List<TodoList>(); // list of todo items
 
     protected override async Task OnInitializedAsync()
     {
-        var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
-        var user = authenticationState.User;
-
-        if (user.Identity.IsAuthenticated)
-        {
-            username = user.Identity.Name; 
-        }
+        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        username = authState.User.Identity!.IsAuthenticated ? authState.User.Identity.Name : "";
     }
 
-    // Verify if the user has already submitted a cpr
-    private bool VerifyCPR()
+    private async Task SubmitItem()
     {
-        // Attempt to find an existing CPR entry for the user
-        Cpr userCpr = todoContext.Cprs.FirstOrDefault(cpr => cpr.User == username);
-
-        // If no entry is found, create a new one
-        if (userCpr == null)
+        ClearError();
+        if (string.IsNullOrEmpty(_itemInput))
         {
-            // Hash the input CPR number
-            var hashedCpr = HashingHandler.BCryptHashing(_cprInput);
-
-            // Create and add the new CPR entry
-            var newUserCpr = new Cpr { CprNr = hashedCpr, User = username };
-            todoContext.Cprs.Add(newUserCpr);
-            todoContext.SaveChanges();
-
-            // Since we just hashed and saved the input, it is verified by definition
-            return true;
+            SetError("Item cannot be empty");
+            return;
         }
-        else
-        {
-            // If an entry exists, verify the input CPR number against the stored, hashed CPR number
-            return HashingHandler.BCryptVerify(_cprInput, userCpr.CprNr);
-        }
+
+        await InsertItem();
+        _itemInput = string.Empty; // Reset input field
     }
 
-
-    private void SubmitCPR()
+    private async Task SubmitCpr()
     {
-
-        var numericCpr = _cprInput.Replace("-", "");
+        ClearError();
+        var numericCpr = CprInput.Replace("-", "");
         if (numericCpr.Length != 10)
         {
-            error = "CPR number must be exactly 10 digits long.";
+            SetError("CPR number must be exactly 10 digits.");
             return;
         }
 
-        if(!VerifyCPR())
+        HashingHandler hashingHandler = new HashingHandler(numericCpr);
+        var hash = hashingHandler.HMACHashing();
+
+        if (!await VerifyAndInsertCpr(hash))
         {
-            error = "CPR does not exist";
+            SetError("Invalid CPR number.");
             return;
         }
 
+        _hashedCpr = hash;
+        _cprInput = string.Empty;
+        CprInput = string.Empty;
+        todoList = await FetchTodo();
         isCPRVerified = true;
-        FetchTodo();
     }
 
-    private void SubmitItem()
+    private async Task<bool> VerifyAndInsertCpr(string hash)
     {
-        if(itemInput == null)
-        {
-            error = "Item cannot be empty";
-            return;
-        } 
-        else
-        {
-            var newItem = new TodoList
-                {
-                    Item = itemInput,
-                    User = username
-                };
-            todoContext.Add(newItem);
-            todoContext.SaveChanges();
+        var cprRecord = await _todoContext.Cprs.FirstOrDefaultAsync(c => c.User == username);
 
-            itemInput = string.Empty;
-
-            todoList.Add(newItem);
+        if (cprRecord == null)
+        {
+            await InsertCpr(hash);
+            return true;
         }
+
+        return hash == cprRecord.CprNr;
+    } 
+
+    private async Task<List<TodoListDTO>> FetchTodo()
+    {
+        // Fetch all todo items for the user asynchronously
+        var todoItems = await _todoContext.TodoLists
+            .Where(todo => todo.User == username)
+            .ToListAsync();
+
+        List<TodoListDTO> decryptedItems = todoItems.Select(todo => new TodoListDTO
+        {
+            User = todo.User,
+            Item = _asyncEncryptionHandler.Decrypt(todo.Item)
+        }).ToList();
+
+
+        return decryptedItems;
     }
 
-    private void FetchTodo()
+    private async Task InsertItem()
     {
-        todoList = todoContext.TodoLists
-                    .Where(todo => todo.User == username)
-                    .ToList();
+        var newItem = new TodoList
+        {
+            Item = _asyncEncryptionHandler.Encrypt(_itemInput),
+            User = username
+        };
+
+        _todoContext.TodoLists.Add(newItem);
+        await _todoContext.SaveChangesAsync(); // Save changes asynchronously
+        todoList.Add(new TodoListDTO { User = username, Item = _itemInput});
+    }
+
+    private async Task InsertCpr(string cpr)
+    {
+        var newCpr = new Cpr
+            {
+                CprNr = cpr,
+                User = username
+            };
+
+        _todoContext.Cprs.Add(newCpr);
+        await _todoContext.SaveChangesAsync(); // Save changes asynchronously
     }
 
     private void HandleInput(ChangeEventArgs e)
@@ -176,7 +194,6 @@
         CprInput = InsertDash(inputValue);
     }
 
-    // Update InsertDash method if necessary to handle the logic correctly
     private string InsertDash(string value)
     {
         if (value == null) return null;
@@ -191,5 +208,15 @@
         if (numericValue.Length > 6) return numericValue.Insert(6, "-");
 
         return numericValue;
+    }
+
+    private void SetError(string message)
+    {
+        error = message;
+    }
+
+    private void ClearError()
+    {
+        error = string.Empty;
     }
 }

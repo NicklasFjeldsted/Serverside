@@ -6,6 +6,7 @@ using Serverside.Components;
 using Serverside.Data;
 using System.Security.Authentication;
 using Serverside.Models;
+using Serverside.Codes;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,6 +18,9 @@ builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<IdentityUserAccessor>();
 builder.Services.AddScoped<IdentityRedirectManager>();
 builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
+
+builder.Services.AddSingleton<EncryptionHandler>();
+builder.Services.AddSingleton<AsyncEncryptionHandler>();
 
 builder.Services.AddAuthentication(options =>
 {
